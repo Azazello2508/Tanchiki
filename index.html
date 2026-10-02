@@ -22,6 +22,10 @@ h1{margin:0;font-size:1.5rem;letter-spacing:.02em}
 .ei{width:11px;height:14px;margin-left:1px;vertical-align:-2px}
 #hint{margin:0;color:var(--mut);font-size:.85rem;text-align:center}
 .bar{display:flex;gap:8px}
+#rooms{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;align-items:center;width:min(100%,520px)}
+#rooms input{width:120px;min-width:0;padding:7px 9px;border:2px solid var(--line);border-radius:9px;background:var(--btn);color:var(--fg);font:inherit;text-transform:uppercase}
+#rooms button{font-size:.9rem;padding:7px 10px}
+#room-status{width:100%;min-height:1.2em;color:var(--mut);font-size:.85rem;text-align:center}
 #mus,#pz{font-size:.9rem;padding:6px 14px}
 canvas{width:min(100%,520px);aspect-ratio:1;background:#111;border:3px solid var(--line);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);touch-action:none}
 #pad{display:flex;width:min(100%,520px);justify-content:space-between;align-items:center;padding:4px 8px}
@@ -38,6 +42,7 @@ button:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
 <body>
 <h1>Танчики</h1>
 <div id="hud"></div>
+<div id="rooms"><button id="create-room" type="button">Создать комнату</button><input id="room-code" maxlength="6" autocomplete="off" placeholder="Код комнаты" aria-label="Код комнаты"><button id="join-room" type="button">Войти</button><button id="copy-room" type="button">Копировать код</button><div id="room-status" role="status">Одиночная игра</div></div>
 <div class="bar"><button id="pz" type="button">⏸ Пауза</button><button id="mus" type="button">♪ Музыка: вкл</button></div>
 <canvas id="c" width="416" height="416"></canvas>
 <p id="hint">Кликните по игре, затем: стрелки или WASD, пробел — огонь. P — пауза. Бонусы: Щ щит, С огонь, + жизнь, З заморозка, Б бронебойные, У ускорение, ! бомба, А амфибия (по воде). Защитите штаб внизу.</p>
@@ -68,11 +73,84 @@ const DX=[0,1,0,-1],DY=[-1,0,1,0];
 const cv=document.getElementById('c'),g=cv.getContext('2d'),hud=document.getElementById('hud');
 let pfrz=0,helpNext=false,frz=0,combo=0,comboT=0,shots=0,hits=0,lost=0,tg=0,nextLife=5000,toast='',toastT=0,ach={},stars=0,bonus=0,deco=[],lvl=0,total=15,best=0,pw=[],banner=0,paused=false,lastHud='',saved=0,grid,hp,tanks,bullets,st='menu',score=0,lives=3,kills=0,spawned=0,timer=0,player,frame=0;
 let held=[],touchDir=null,keyFire=false,touchFire=false;
+let coopRole='solo',coopReady=false,coopPlayer2=null,coopInput={dir:null,fire:false},coopSocket=null,coopFrame=0;
 
-function mk(x,y,d,e){return{x,y,d,e,sp:e?1:2,cool:0,alive:true,inv:0}}
+const ROOM_SERVER='https://tanchiki-server.pinkovskiy2508.workers.dev';
+const roomCodeInput=document.getElementById('room-code'),roomStatus=document.getElementById('room-status');
+function roomStatusText(s){roomStatus.textContent=s}
+function ensureCoopPlayer(){
+  if(coopPlayer2&&tanks.includes(coopPlayer2))return;
+  coopPlayer2=Object.assign(mk(8*T,12*T,0,false),{pid:'p2',inv:90});
+  tanks.push(coopPlayer2);
+}
+function sendRoom(message){if(coopSocket&&coopSocket.readyState===WebSocket.OPEN)coopSocket.send(JSON.stringify(message))}
+function connectRoom(role,code){
+  if(coopSocket){coopSocket.onclose=null;coopSocket.close()}
+  coopRole=role;coopReady=false;
+  const wsUrl=ROOM_SERVER.replace(/^http/,'ws')+'/ws?room='+encodeURIComponent(code)+'&role='+role;
+  coopSocket=new WebSocket(wsUrl);
+  coopSocket.onopen=()=>roomStatusText(role==='host'?'Комната создана. Ожидаем второго игрока…':'Подключились. Ждём ведущего…');
+  coopSocket.onmessage=(event)=>{
+    let m;try{m=JSON.parse(event.data)}catch{return}
+    if(m.type==='waiting'){roomStatusText(role==='host'?'Код '+code+' — отправьте его другу':'Ожидаем подключения ведущего…')}
+    else if(m.type==='ready'){
+      coopReady=true;
+      if(role==='host'){ensureCoopPlayer();roomStatusText('Друг подключился! Вы — игрок 1, друг — игрок 2.');sendRoomState()}
+      else roomStatusText('Вы подключились как игрок 2. Управляйте своим танком!');
+    }else if(m.type==='input'&&role==='host'){
+      coopInput={dir:Number.isInteger(m.dir)?m.dir:null,fire:!!m.fire};
+    }else if(m.type==='state'&&role==='guest'){
+      applyRoomState(m.state);
+    }else if(m.type==='guest_left'&&role==='host'){
+      coopReady=false;coopInput={dir:null,fire:false};
+      tanks=tanks.filter(t=>t.pid!=='p2');coopPlayer2=null;
+      roomStatusText('Друг вышел. Код комнаты: '+code);
+    }else if(m.type==='host_left'&&role==='guest'){
+      roomStatusText('Ведущий отключился. Можно вернуться в одиночную игру.');
+      coopRole='solo';coopReady=false;coopPlayer2=null;tanks=tanks.filter(t=>t.pid!=='p2');
+    }
+  };
+  coopSocket.onerror=()=>roomStatusText('Не удалось подключиться. Проверьте код и попробуйте ещё раз.');
+  coopSocket.onclose=()=>{
+    if(coopRole===role){coopRole='solo';coopReady=false;coopPlayer2=null;roomStatusText('Соединение закрыто. Одиночная игра.')}
+  };
+}
+function sendRoomState(){
+  if(coopRole!=='host'||!coopReady)return;
+  sendRoom({type:'state',state:{grid:grid.map(r=>r.join('')),hp,tanks:tanks.map(t=>({...t})),player:{...player},bullets,pw,lvl,TOTAL,score,lives,kills,spawned,timer,st,paused,combo,comboT,frz,pfrz,banner,toast,toastT,bonus,stars,lost,shots,hits}});
+}
+function applyRoomState(s){
+  if(!s)return;
+  if(s.grid)grid=s.grid.map(r=>r.split(''));hp=s.hp||hp;tanks=s.tanks||tanks;bullets=s.bullets||[];pw=s.pw||[];
+  player=tanks.find(t=>t.pid==='p1')||s.player||tanks.find(t=>!t.e);coopPlayer2=tanks.find(t=>t.pid==='p2')||null;
+  if(s.lvl!==lvl)deco=[];
+  lvl=s.lvl;TOTAL=s.TOTAL;score=s.score;lives=s.lives;kills=s.kills;spawned=s.spawned;timer=s.timer;st=s.st;paused=s.paused;combo=s.combo;comboT=s.comboT;frz=s.frz;pfrz=s.pfrz;banner=s.banner;toast=s.toast;toastT=s.toastT;bonus=s.bonus;stars=s.stars;lost=s.lost;shots=s.shots;hits=s.hits;
+  MAP=LEVELS[lvl%LEVELS.length];
+}
+document.getElementById('create-room').addEventListener('click',async()=>{
+  try{
+    roomStatusText('Создаём комнату…');
+    const response=await fetch(ROOM_SERVER+'/api/create',{method:'POST'});
+    if(!response.ok)throw new Error('server');
+    const data=await response.json();roomCodeInput.value=data.code;
+    connectRoom('host',data.code);
+  }catch{roomStatusText('Не удалось создать комнату. Сервер ещё нужно настроить.')}
+});
+document.getElementById('join-room').addEventListener('click',()=>{
+  const code=roomCodeInput.value.trim().toUpperCase();
+  if(!/^[A-HJ-NP-Z2-9]{6}$/.test(code)){roomStatusText('Введите шестизначный код комнаты.');return}
+  connectRoom('guest',code);
+});
+document.getElementById('copy-room').addEventListener('click',async()=>{
+  const code=roomCodeInput.value.trim();if(!code){roomStatusText('Сначала создайте комнату или введите её код.');return}
+  try{await navigator.clipboard.writeText(code);roomStatusText('Код '+code+' скопирован. Отправьте его другу.')}catch{roomCodeInput.focus();roomCodeInput.select();roomStatusText('Код выделен — скопируйте его и отправьте другу.')}
+});
+setInterval(()=>{if(coopRole==='guest')sendRoom({type:'input',dir:dir(),fire:keyFire||touchFire})},70);
+
+function mk(x,y,d,e){return{x,y,d,e,sp:e?1:2,cool:0,alive:true,inv:0,pid:e?undefined:'p1'}}
 function reset(next){if(next)lvl++;else{lvl=0;score=0;lives=3;tg=0;nextLife=5000}combo=0;comboT=0;shots=0;hits=0;lost=0;frz=0;pfrz=0;helpNext=false;MAP=LEVELS[lvl%LEVELS.length];TOTAL=Math.round(10+2.2*lvl);pw=[];banner=150;paused=false;
   grid=MAP.map(r=>r.split(''));hp=MAP.map(r=>r.split('').map(c=>c==='B'?3:0));bullets=[];scorch.length=0;fx.length=0;kills=0;spawned=0;timer=60;
-  player=mk(4*T,12*T,0,false);player.inv=90;tanks=[player];st='play';
+  player=mk(4*T,12*T,0,false);player.inv=90;player.pid='p1';tanks=[player];coopPlayer2=null;if(coopRole==='host'&&coopReady)ensureCoopPlayer();st='play';
   deco=[];for(let i=0;i<130;i++){const x=Math.random()*S,y=Math.random()*S;if(grid[Math.floor(y/T)][Math.floor(x/T)]==='.')deco.push([x,y,1+Math.random()*2.5,THEMES[lvl%5].d[Math.random()*3|0]])}
 }
 function hit(x,y,me){
@@ -179,7 +257,7 @@ function finish(){
   stars=lost===0&&acc>=.5?3:lost<=1?2:1;
   if(lost===0)unlock('flawless','Без потерь');
 }
-function go(){if(st==='win')reset(lvl<9);else if(st!=='play')reset()}
+function go(){if(coopRole==='guest')return;if(st==='win')reset(lvl<9);else if(st!=='play')reset()}
 function fire(t){
   if(t.cool>0)return;
   if(!t.e)shots++;
@@ -192,6 +270,11 @@ function dir(){return held.length?held[held.length-1]:touchDir}
 function update(){
   const d=pfrz>0?null:dir();
   player.sp=player.bs>0?3:2;if(d!==null){player.d=d;move(player,d)}
+  if(coopRole==='host'&&coopReady&&coopPlayer2&&coopPlayer2.alive){
+    coopPlayer2.sp=coopPlayer2.bs>0?3:2;
+    if(coopInput.dir!==null){coopPlayer2.d=coopInput.dir;move(coopPlayer2,coopInput.dir)}
+    if(coopInput.fire&&!(pfrz>0))fire(coopPlayer2);
+  }
   for(const p of pw)if(Math.abs(p.x-(player.x+16))<20&&Math.abs(p.y-(player.y+16))<20){p.l=0;applyPw(p.k);score+=50;boom(p.x,p.y,10,['#fff','#9ef0c0'],2,2);sfxPing()}
   pw=pw.filter(p=>--p.l>0);
   if(score>=nextLife){nextLife+=5000;lives=Math.min(lives+1,5);toastShow('Бонус: +1 жизнь за очки!')}
@@ -289,6 +372,7 @@ function drawTank(t){
   if((frz>0&&t.e)||(pfrz>0&&!t.e)){g.strokeStyle='rgba(150,220,255,.9)';g.lineWidth=2;g.beginPath();g.arc(0,0,17,0,7);g.stroke();g.fillStyle='rgba(150,220,255,.18)';g.fill()}
   if(t.fl>0){g.fillStyle='rgba(255,255,255,.55)';g.fillRect(-13,-14,26,28)}
   g.restore();
+  if(t.pid==='p2'&&!t.e){g.strokeStyle='rgba(79,195,247,.95)';g.lineWidth=2;g.beginPath();g.arc(t.x+16,t.y+16,18,0,Math.PI*2);g.stroke()}
 }
 let SC=1;
 function fit(){const w=cv.clientWidth;if(!w)return;const p=Math.round(w*Math.min(devicePixelRatio||1,3));if(cv.width!==p){cv.width=cv.height=p}SC=cv.width/S}
@@ -458,12 +542,12 @@ document.addEventListener('visibilitychange',()=>{if(document.hidden&&st==='play
 try{best=+localStorage.getItem('tb')||0}catch(e){}
 try{ach=JSON.parse(localStorage.getItem('ta')||'{}')}catch(e){}
 const pzb=document.getElementById('pz');
-pzb.addEventListener('click',()=>{if(st==='play')paused=!paused});
+pzb.addEventListener('click',()=>{if(coopRole==='guest')return;if(st==='play')paused=!paused});
 reset();
 let last=0,acc=0;
 function loop(ts){
   acc+=Math.min(ts-last,100);last=ts;
-  while(acc>=16.67){acc-=16.67;if(st==='play'&&!paused)update();if(!paused){fxStep();if(banner>0)banner--;if(comboT>0)comboT--;if(frz>0)frz--;if(pfrz>0)pfrz--;if(toastT>0)toastT--}frame++}
+  while(acc>=16.67){acc-=16.67;if(st==='play'&&!paused&&coopRole!=='guest')update();if(!paused){fxStep();if(banner>0)banner--;if(comboT>0)comboT--;if(frz>0)frz--;if(pfrz>0)pfrz--;if(toastT>0)toastT--}frame++;if(coopRole==='host'&&coopReady&&frame%6===0)sendRoomState()}
   draw();requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
