@@ -1,3 +1,4 @@
+//Первый запуск Cloudflare Worker
 import { DurableObject } from "cloudflare:workers";
 
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
