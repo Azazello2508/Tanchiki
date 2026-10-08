@@ -722,10 +722,15 @@ function draw(){
   if(st!=='play'){if(!saved){saved=1;try{localStorage.setItem('tb',best)}catch(e){}}}else saved=0;
 }
 
-/* Музыка (марш): оригинальный рок-трек в духе русского рока (Ля минор, ход Am-G-F-E), 8-битный звук */
-let ac,mg,mb,nb,musicOn=true,seq=0,nextT=0,mtimer=null;
-const CHB=[[62,65,69],[62,67,70],[61,64,69],[62,65,69],[62,67,70],[62,65,70],[61,64,69],[61,64,69]],RTB=[38,43,45,38,43,46,45,45],BAR=4;
-const MEL=[[62,0,65,0,69,0,74,0],[72,0,70,0,67,0,0,0],[69,0,69,0,73,0,76,0],[74,0,0,0,69,0,0,0],[67,0,70,0,74,0,79,0],[77,0,74,0,70,0,0,0],[73,0,76,0,73,0,69,0],[69,0,0,0,0,0,0,0]];
+/* Музыка боя: быстрый рок-марш, 150 ударов в минуту, ре минор (Dm-B♭-C-A), «скачущий» бас и гитара с перегрузом.
+   Чем больше врагов на поле, тем плотнее барабаны и бас. */
+let ac,mg,mb,nb,gb=null,musicOn=true,seq=0,nextT=0,mtimer=null;
+const SD=.1,SONG=[0,1,2,1];
+const PROG=[[38,34,36,33],[38,34,36,33],[31,38,34,33]];
+const LEAD=[
+ [[[0,74,2],[2,69,2],[4,74,2],[6,77,2],[8,76,4],[12,74,4]],[[0,77,2],[2,74,2],[4,77,2],[6,81,2],[8,79,6],[14,77,2]],[[0,76,2],[2,72,2],[4,76,2],[6,79,2],[8,77,4],[12,76,4]],[[0,73,4],[4,76,4],[8,81,8]]],
+ [[[0,74,2],[2,69,2],[4,74,2],[6,77,2],[8,76,4],[12,74,4]],[[0,77,2],[2,74,2],[4,77,2],[6,81,2],[8,79,6],[14,77,2]],[[0,76,2],[2,72,2],[4,76,2],[6,79,2],[8,77,4],[12,76,4]],[[0,81,4],[4,79,2],[6,77,2],[8,76,4],[12,73,4]]],
+ [[[0,70,8],[8,74,8]],[[0,69,8],[8,77,8]],[[0,74,6],[6,77,2],[8,79,8]],[[0,76,8],[8,73,4],[12,76,4]]]];
 const hz=m=>440*Math.pow(2,(m-69)/12);
 function tone(type,f,t,d,v){const o=ac.createOscillator(),q=ac.createGain();o.type=type;o.frequency.value=f;q.gain.setValueAtTime(v,t);q.gain.exponentialRampToValueAtTime(.001,t+d);o.connect(q).connect(mg);o.start(t);o.stop(t+d+.02)}
 function noise(t,d,v,f,type){const s=ac.createBufferSource(),q=ac.createGain(),fl=ac.createBiquadFilter();s.buffer=nb;fl.type=type;fl.frequency.value=f;q.gain.setValueAtTime(v,t);q.gain.exponentialRampToValueAtTime(.001,t+d);s.connect(fl).connect(q).connect(mg);s.start(t);s.stop(t+d)}
@@ -738,20 +743,41 @@ function brass(f,t,d,v,dst){
   for(const dt of [-5,5]){const o=ac.createOscillator();o.type='sawtooth';o.frequency.value=f;o.detune.value=dt;o.connect(fl);o.start(t);o.stop(t+d+.03)}
   fl.connect(q);q.connect(dst||mg);
 }
-function step(s,t){
-  const bar=s>>3,i=s&7,SD=.268;
-  if(i===0||i===4){tone('triangle',hz(RTB[bar]),t,.42,.6);tone('sawtooth',hz(RTB[bar]),t,.28,.08);kick(t)}
-  if(i===2||i===6){for(const m of CHB[bar])brass(hz(m),t,.2,.07,mb);snare(t,.34)}
-  if(i===3||i===7)snare(t,.1);
-  if(bar===7&&i>=4){snare(t+SD/2,.22)}
-  if(bar===3&&i===7){snare(t+SD/2,.2)}
-  const n=MEL[bar][i];if(n){brass(hz(n),t,.46,.16,mb);brass(hz(n-12),t,.46,.07,mb)}
+function guitarBus(){
+  if(gb)return gb;const sh=ac.createWaveShaper(),cu=new Float32Array(1024);for(let i=0;i<1024;i++){const x=i/511.5-1;cu[i]=Math.tanh(x*6)}sh.curve=cu;
+  const lp=ac.createBiquadFilter();lp.type='lowpass';lp.frequency.value=2600;const hp=ac.createBiquadFilter();hp.type='highpass';hp.frequency.value=90;const q=ac.createGain();q.gain.value=.16;
+  sh.connect(lp);lp.connect(hp);hp.connect(q);q.connect(mg);return gb=sh;
 }
-function sched(){while(nextT<ac.currentTime+.25){step(seq,nextT);nextT+=.268;seq=(seq+1)%64}}
+function chug(root,t,d,v,open){
+  const bus=guitarBus(),q=ac.createGain(),fl=ac.createBiquadFilter();fl.type='lowpass';fl.frequency.value=open?3200:900;
+  q.gain.setValueAtTime(v,t);q.gain.exponentialRampToValueAtTime(.001,t+d);
+  for(const [m,dt] of [[root+12,-7],[root+19,6],[root+24,0]]){const o=ac.createOscillator();o.type='sawtooth';o.frequency.value=hz(m);o.detune.value=dt;o.connect(fl);o.start(t);o.stop(t+d+.02)}
+  fl.connect(q);q.connect(bus);
+}
+function hat(t,v,open){noise(t,open?.12:.035,v,8000,'highpass')}
+function tom(t,f,v){const o=ac.createOscillator(),q=ac.createGain();o.frequency.setValueAtTime(f,t);o.frequency.exponentialRampToValueAtTime(f*.55,t+.18);q.gain.setValueAtTime(v,t);q.gain.exponentialRampToValueAtTime(.001,t+.2);o.connect(q).connect(mg);o.start(t);o.stop(t+.22)}
+function step(s,t){
+  const st16=s&15,bar=(s>>4)&3,part=SONG[(s>>6)&3],root=PROG[part][bar];
+  const foes=(st==='play'&&tanks)?tanks.filter(x=>x.e).length:0,hot=foes>=3,last=bar===3;
+  /* барабаны */
+  if(st16===0&&bar===0)noise(t,.9,.35,5000,'highpass');
+  if(st16===0||st16===3||st16===8||st16===10||(hot&&(st16===6||st16===14)))kick(t);
+  if(st16===4||st16===12)snare(t,.42);
+  if(last&&part!==1&&st16>=12)snare(t,.18+.06*(st16-12));
+  else if(last&&part===1&&st16>=8&&st16%2===0)tom(t,[0,0,0,0,0,0,0,0,180,0,150,0,120,0,95,0][st16],.5);
+  else if(hot||st16%2===0)hat(t,st16%4===2?.16:.09,st16===14&&!hot);
+  /* бас: «галоп» (восьмая + две шестнадцатые) */
+  const gal=st16%4;if(gal!==1){const d=gal===0?.18:.08;tone('sawtooth',hz(root),t,d,.12);tone('triangle',hz(root),t,d+.05,.5);if(hot&&gal===0)tone('square',hz(root+12),t,.08,.05)}
+  /* ритм-гитара */
+  if(st16===0)chug(root,t,.38,.9,true);else if(gal!==1&&st16!==2)chug(root,t,.08,.55,false);
+  /* соло */
+  for(const [p0,m,len] of LEAD[part][bar])if(p0===st16){const d=len*SD*.95;brass(hz(m),t,d,.15,mb);brass(hz(m+12),t,d,.04,mb)}
+}
+function sched(){while(nextT<ac.currentTime+.25){step(seq,nextT);nextT+=SD;seq=(seq+1)%256}}
 function startMusic(){
   if(!ac){
     ac=new(window.AudioContext||window.webkitAudioContext)();
-    mg=ac.createGain();mg.gain.value=.3;mg.connect(ac.destination);mb=ac.createGain();mb.gain.value=.5;mb.connect(mg);const dl=ac.createDelay(1),fk=ac.createGain(),lp=ac.createBiquadFilter(),wt=ac.createGain();dl.delayTime.value=.55;fk.gain.value=.4;lp.type='lowpass';lp.frequency.value=1800;wt.gain.value=.5;mb.connect(dl);dl.connect(lp);lp.connect(fk);fk.connect(dl);lp.connect(wt);wt.connect(mg);
+    mg=ac.createGain();mg.gain.value=.3;mg.connect(ac.destination);mb=ac.createGain();mb.gain.value=.5;mb.connect(mg);const dl=ac.createDelay(1),fk=ac.createGain(),lp=ac.createBiquadFilter(),wt=ac.createGain();dl.delayTime.value=.3;fk.gain.value=.3;lp.type='lowpass';lp.frequency.value=1800;wt.gain.value=.5;mb.connect(dl);dl.connect(lp);lp.connect(fk);fk.connect(dl);lp.connect(wt);wt.connect(mg);
     nb=ac.createBuffer(1,ac.sampleRate*.3,ac.sampleRate);
     const d=nb.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
   }
